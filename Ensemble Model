@@ -1,0 +1,273 @@
+################################################################################
+#Author  : Sharath P Dandamudi, Vignesh Janakiraman
+#Date    : 23 FEB 2016
+#Purpose : Text classification using XGBoost/Naive/SVM and comparison
+#Version : 0.8
+#Note    : Training data is duplicated to make a balanced sample for TA. Test data is Jan and Feb data
+################################################################################
+
+#Clearing R console
+rm(list=ls())
+
+#Set the working directory
+setwd("C:/Users/Vignesh J/Documents/Study/ATAC Automation/20160223-TextClassification")
+
+#Import dataset
+atac_wc <- read.csv("train - v0.2.csv", stringsAsFactors = FALSE)
+
+#Get the data to be classifed
+test <- read.xlsx2("test.xlsx", sheetName = "tbl_mail")
+
+
+#train dataset
+train <- as.data.frame(atac_wc)
+train$type <- factor(train$type)
+
+#combine data set
+combi <- as.data.frame(train, test)
+colnames(combi) <- c("content")
+
+############################################## Data preprocessing to create document matrix ######################################
+
+#install package
+library(tm)
+
+#create corpus
+corpus <- Corpus(VectorSource(combi$content))
+
+#---Cleaning text data---#
+
+#Converting all text to lower-case
+corpus <- tm_map(corpus, content_transformer(tolower))
+
+#Removing stopwords in English
+corpus <- tm_map(corpus, removeWords, c(stopwords('english')))
+
+#Removing numbers
+corpus <- tm_map(corpus, removeNumbers)
+
+#Removing punctuation
+corpus <- tm_map(corpus, removePunctuation)
+
+#Stripping white spaces
+corpus <- tm_map(corpus, stripWhitespace)
+
+#Removing special characters - all non alphanumeric
+removeSpecialChars <- function(x) gsub("[^a-zA-Z0-9] ","",x)
+corpus <- tm_map(corpus, removeSpecialChars)
+
+#Importing custom stop words files
+stop1 = read.table("stop1.txt", header = TRUE)
+stop2 = read.table("stop2.txt", header = TRUE)
+stop3 = read.table("stop3.txt", header = TRUE)
+stop4 = read.table("stop4.txt", header = TRUE)
+stop5 = read.table("stop5.txt", header = TRUE)
+
+#Storing the stop word files into vectors
+stop_vec1 = as.vector(stop1$stop)
+stop_vec2 = as.vector(stop2$stop)
+stop_vec3 = as.vector(stop3$stop)
+stop_vec4 = as.vector(stop4$stop)
+stop_vec5 = as.vector(stop5$stop)
+
+#Removing the stop words from corpus
+corpus <- tm_map(corpus, removeWords, c(stop_vec1))
+corpus <- tm_map(corpus, removeWords, c(stop_vec2))
+corpus <- tm_map(corpus, removeWords, c(stop_vec3)) 
+corpus <- tm_map(corpus, removeWords, c(stop_vec4)) 
+corpus <- tm_map(corpus, removeWords, c(stop_vec5,"analyze","analyse","analysis","analyses","excel","tool","question","work","data","analytical"))
+
+#Stripping white spaces
+corpus <- tm_map(corpus, stripWhitespace)
+
+#Stemming documnent
+stemDocumentfix <- function(x)
+{
+  PlainTextDocument(paste(stemDocument(unlist(strsplit(as.character(x), " "))),collapse=' '))
+}
+corpus = tm_map(corpus, stemDocumentfix)
+
+
+#Removing special characters - all non alphanumeric
+removeSpecialChars <- function(x) gsub("[^a-zA-Z0-9] ","",x)
+corpus <- tm_map(corpus, removeSpecialChars)
+
+#Convert the text into plain text document
+corpus <- tm_map(corpus, PlainTextDocument)
+
+#Initiating library RWeka
+library(RWeka)
+
+#Creating 1 and 2 grams and creating a sparse matrix
+BigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 2))
+dtm <- DocumentTermMatrix(corpus, control = list(tokenize = BigramTokenizer))
+
+#removing column names which has mckinseycom
+dtm <- dtm[,-grep('mckinsey',colnames(dtm))]
+
+############################################## Naive Bayesian Model  ############################################
+
+
+#Splitting raw data frame
+rowno <- 1:nrow(train)
+atac_raw_train <- combi[rowno, ]
+atac_raw_test <- combi[-rowno, ]
+
+#Splitting document term matrix
+atac_dtm_train <- dtm[rowno,]
+atac_dtm_test <- dtm[-rowno,]
+
+#Splitting corpus
+atac_corpus_train <- corpus[rowno ]
+atac_corpus_test <- corpus[-rowno ]
+
+#Save list of terms with frequent>=2 for use later
+atac_dict <- c(findFreqTerms(atac_dtm_train, 2))
+
+#To limit our training and test matrixes to only the words in the preceding dictionary
+atac_train <- DocumentTermMatrix(atac_corpus_train,list(dictionary = atac_dict))
+atac_test <- DocumentTermMatrix(atac_corpus_test,list(dictionary = atac_dict))
+
+
+#The naive Bayes classifier is typically trained on data with categorical features. This
+#poses a problem since the cells in the sparse matrix indicate a count of the times a
+#word appears in a message. We should change this to a factor variable that simply
+#indicates yes or no depending on whether the word appears at all
+convert_counts <- function(x) {
+  x <- ifelse(x > 0, 1, 0)
+  x <- factor(x, levels = c(0, 1), labels = c("No", "Yes"))
+  return (x)
+}
+
+#Create factor indicating Yes or No for whether each column's word appears in the messages comprising the rows
+naive_train <- apply(atac_train, MARGIN = 2, convert_counts)
+naive_test <- apply(atac_test, MARGIN = 2, convert_counts)
+
+#Initiating e0171 library to run a Naive Bayes model
+library(e1071)
+
+#Running a Naive Bayes model and later scoring the testing data (Iter - 1)
+naive_classifier <- naiveBayes(naive_train,train$type)
+naive_test_pred <- predict(naive_classifier,naive_test)
+
+#saving the predicted data into a data frame
+pred_dataset <- cbind(as.data.frame(test$id), as.data.frame(naive_test_pred))
+colnames(pred_dataset) <- c('id','typeNaive')
+pred_dataset <- data.frame(pred_dataset, key = 'id')
+
+#Running a Naive Bayes model and later scoring the testing data with laplace correction (Iter - 2)
+naive_classifier2 <- naiveBayes(naive_train, train$type,laplace = 1)
+naive_test_pred2 <- predict(naive_classifier2, naive_test)
+
+#saving the predicted data into a data frame
+pred_dataset <- cbind(pred_dataset, as.data.frame(naive_test_pred2))
+colnames(pred_dataset)[4] <- "typeNaiveLaplace"
+
+############################################## XG Boost Model  ############################################
+
+#remove sparse terms
+sparse <- removeSparseTerms(dtm,1 - 1/nrow(dtm))
+
+#create sparse as data frame
+newsparse <- as.data.frame(as.matrix(sparse))
+
+#check if all words are appropriate
+colnames(newsparse) <- make.names(colnames(newsparse))
+
+#Creating the response variable
+newsparse$type <- NULL
+
+#add SLO for Test data
+newsparse$type <-  as.factor(c(train$type, rep(1, nrow(test))))
+
+#split data 
+mytrain <- newsparse[1:nrow(train),]
+mytest <- newsparse[-(1:nrow(train)),]
+
+library(xgboost)
+library(Matrix)
+
+# creating the matrix for training the model
+ctrain <- xgb.DMatrix(Matrix(data.matrix(mytrain[,!colnames(mytrain) %in% c('type')])), 
+                      label = as.numeric(mytrain$type)-1)
+
+#advanced data set preparation
+dtest <- xgb.DMatrix(Matrix(data.matrix(mytest[,!colnames(mytest) %in% c('type')]))) 
+watchlist <- list(train = ctrain, test = dtest)
+
+#train multiclass model using softmax
+#first model
+xgbmodel <- xgboost(data = ctrain, max.depth = 25, eta = 0.3, nround = 50, 
+                    objective = "multi:softmax", num_class = 4, verbose = 0, watchlist = watchlist)
+
+#second model
+xgbmodel2 <- xgboost(data = ctrain, max.depth = 20, eta = 0.4, nrounds = 400, 
+                     objective = "multi:softmax", num_class = 4, watchlist = watchlist, verbose = 0)
+
+#predict 1
+xgbmodel.predict <- predict(xgbmodel, newdata = data.matrix(mytest[, !colnames(mytest) %in% c('type')]))
+xgbmodel.predict.text <- levels(train$type)[xgbmodel.predict + 1]
+
+#predict 2
+xgbmodel.predict2 <- predict(xgbmodel2, newdata = data.matrix(mytest[, !colnames(mytest) %in% c('type')])) 
+xgbmodel.predict2.text <- levels(train$type)[xgbmodel.predict2 + 1]
+
+#data frame for predict 1
+pred_dataset <- cbind(pred_dataset, as.data.frame(xgbmodel.predict.text))
+colnames(pred_dataset)[5] <-'typexgb1'
+
+#data frame for predict 2
+pred_dataset <- cbind(pred_dataset,as.data.frame(xgbmodel.predict2.text))
+colnames(pred_dataset)[6]  <- 'typexgb2'
+
+
+############################################## SVM  ############################################
+library("RTextTools")
+
+rowno <- 1:nrow(train)
+svm.train <- sparse[rowno,]
+svm.test <- sparse[-rowno,]
+
+# Configure the training data
+container <- create_container(svm.train, train$type, trainSize=1:nrow(train),virgin=FALSE)
+
+# train a SVM Model
+svm.model <- train_model(container, "SVM", kernel="linear", cost=.1)
+
+# create the corresponding container
+predSize = nrow(svm.test)
+predictionContainer <- create_container(svm.test, labels=rep(1,predSize), testSize=1:predSize, virgin=FALSE)
+
+# predict
+results <- classify_model(predictionContainer, svm.model)
+
+#data frame for predict 5
+pred_dataset <- cbind(pred_dataset,as.data.frame(results$SVM_LABEL))
+colnames(pred_dataset)[7]  <- 'typeSVM'
+
+
+############################################## Ensembling  ############################################
+
+
+#function to find the maximum value row wise
+Mode <- function(x) {
+  u <- unique(x)
+  u[which.max(tabulate(match(x, u)))]
+}
+
+y <- apply(pred_dataset[,-c(1,3)],1,Mode)
+
+final.Prediction <- data.frame(id= pred_dataset$id ,type = y)
+
+sum(diag(table(test$actual_type, pred_dataset$typexgb1)))/nrow(test) 
+sum(diag(table(test$actual_type, pred_dataset$typexgb2)))/nrow(test)
+sum(diag(table(test$actual_type, pred_dataset$typeNaive)))/nrow(test)
+sum(diag(table(test$actual_type, pred_dataset$typeNaiveLaplace)))/nrow(test)
+sum(diag(table(test$actual_type, pred_dataset$typeSVM)))/nrow(test)
+sum(diag(table(test$actual_type, final.Prediction$type)))/nrow(test)
+
+# writing the final prediction back into the excel
+wrkbk <-loadWorkbook("Mails.xlsx")
+wrksheet <- getSheets(wrkbk)
+addDataFrame(final.Prediction$type,wrksheet$tbl_mail,col.names = T,row.names = F, startColumn = 6)
+saveWorkbook(wrkbk,"Mails.xlsx")
